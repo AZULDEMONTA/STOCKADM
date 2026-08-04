@@ -435,24 +435,26 @@ function Gauge({ dias, min, max }) {
 
 function KpiCard({ label, value, sub, icon: Icon, accent }) {
   return (
-    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: "16px 18px", flex: "1 1 200px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 7, color: COLORS.inkMuted, fontSize: 11.5, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>
-        {Icon && <Icon size={14} strokeWidth={2.2} />} {label}
+    <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: "9px 12px", flex: "1 1 150px" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 5, color: COLORS.inkMuted, fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.4 }}>
+        {Icon && <Icon size={12} strokeWidth={2.2} />} {label}
       </div>
-      <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 26, fontWeight: 700, color: accent || COLORS.ink, marginTop: 8, letterSpacing: -0.5 }}>
+      <div style={{ fontFamily: "'Space Grotesk', sans-serif", fontSize: 18, fontWeight: 700, color: accent || COLORS.ink, marginTop: 3, letterSpacing: -0.3, lineHeight: 1.15 }}>
         {value}
       </div>
-      {sub && <div style={{ fontSize: 12, color: COLORS.inkMuted, marginTop: 3 }}>{sub}</div>}
+      {sub && <div style={{ fontSize: 10.5, color: COLORS.inkMuted, marginTop: 1 }}>{sub}</div>}
     </div>
   );
 }
 
+const PERIOD_CELL_STYLE = { borderLeft: `1px solid ${COLORS.border}`, paddingLeft: 12, paddingRight: 4 };
+
 function PeriodCell({ value, prevValue, pct }) {
-  if (value == null) return <div style={{ textAlign: "right", color: COLORS.inkMuted, fontSize: 12 }}>—</div>;
+  if (value == null) return <div style={{ ...PERIOD_CELL_STYLE, textAlign: "right", color: COLORS.inkMuted, fontSize: 12 }}>—</div>;
   let delta = null;
   if (prevValue != null && prevValue !== 0) delta = ((value - prevValue) / prevValue) * 100;
   return (
-    <div style={{ textAlign: "right" }}>
+    <div style={{ ...PERIOD_CELL_STYLE, textAlign: "right" }}>
       <div style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5 }}>{fmtMoney(value)}</div>
       {delta != null && (
         <div style={{
@@ -480,12 +482,14 @@ function PctTag({ pct }) {
   );
 }
 
+const TOTAL_PERIOD_CELL_STYLE = { borderLeft: "1px solid rgba(255,255,255,0.2)", paddingLeft: 12, paddingRight: 4 };
+
 function TotalPeriodCell({ value, prevValue }) {
-  if (value == null) return <div style={{ textAlign: "right", color: "rgba(255,255,255,0.6)", fontSize: 12 }}>—</div>;
+  if (value == null) return <div style={{ ...TOTAL_PERIOD_CELL_STYLE, textAlign: "right", color: "rgba(255,255,255,0.6)", fontSize: 12 }}>—</div>;
   let delta = null;
   if (prevValue != null && prevValue !== 0) delta = ((value - prevValue) / prevValue) * 100;
   return (
-    <div style={{ textAlign: "right" }}>
+    <div style={{ ...TOTAL_PERIOD_CELL_STYLE, textAlign: "right" }}>
       <div style={{ fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, fontWeight: 700 }}>{fmtMoney(value)}</div>
       {delta != null && (
         <div style={{
@@ -565,10 +569,28 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
   const [statusFilter, setStatusFilter] = useState("TODOS");
   const [sortBy, setSortBy] = useState("stock");
   const [confirmApplyTarget, setConfirmApplyTarget] = useState(false);
+  const [hiddenMonths, setHiddenMonths] = useState(() => new Set());
+  const [monthFilterOpen, setMonthFilterOpen] = useState(false);
   const getVenta = useVentaLookup(data);
   const monthOrder = useMonthOrder(data);
   const latest = monthOrder[monthOrder.length - 1];
   const prev = monthOrder[monthOrder.length - 2];
+  const visibleMonthOrder = useMemo(
+    () => monthOrder.filter((m) => !hiddenMonths.has(m.key)),
+    [monthOrder, hiddenMonths]
+  );
+  const toggleMonthVisible = (key) => {
+    setHiddenMonths((prevH) => {
+      const next = new Set(prevH);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        if (monthOrder.length - (next.size + 1) < 1) return prevH; // no permitir ocultar todos
+        next.add(key);
+      }
+      return next;
+    });
+  };
 
   const grupos = useMemo(() => {
     const set = new Set(Object.values(data.rows).map((r) => r.grupo));
@@ -678,7 +700,7 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
         onCancel={() => setConfirmApplyTarget(false)}
         onConfirm={() => { applyTargetToAll(45, 60); setConfirmApplyTarget(false); }}
       />
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 20 }}>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
         <KpiCard label="Stock actual" value={fmtMoneyShort(kpis.stockActual)} sub={latest ? latest.label : ""} icon={Layers} />
         <KpiCard
           label="Variación vs. período anterior"
@@ -765,9 +787,53 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
         >
           <ChevronRight size={13} /> Colapsar todos
         </button>
+        <div style={{ position: "relative", marginLeft: "auto" }}>
+          <button
+            onClick={() => setMonthFilterOpen((o) => !o)}
+            style={{ display: "flex", alignItems: "center", gap: 6, background: hiddenMonths.size > 0 ? COLORS.primarySoft : "none", border: `1px solid ${hiddenMonths.size > 0 ? COLORS.primaryDark : COLORS.border}`, color: COLORS.primaryDark, padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+          >
+            <Layers size={13} />
+            Meses {hiddenMonths.size > 0 ? `(${monthOrder.length - hiddenMonths.size}/${monthOrder.length})` : ""}
+            <ChevronDown size={13} />
+          </button>
+          {monthFilterOpen && (
+            <>
+              <div onClick={() => setMonthFilterOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 5 }} />
+              <div style={{
+                position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 6,
+                background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 10,
+                boxShadow: "0 8px 24px rgba(22,35,63,0.14)", padding: 10, minWidth: 190, maxHeight: 280, overflowY: "auto",
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: COLORS.inkMuted, textTransform: "uppercase", letterSpacing: 0.4 }}>
+                    Mostrar períodos
+                  </span>
+                  <button
+                    onClick={() => setHiddenMonths(new Set())}
+                    style={{ background: "none", border: "none", color: COLORS.primary, fontSize: 11, fontWeight: 600, cursor: "pointer" }}
+                  >
+                    Mostrar todos
+                  </button>
+                </div>
+                {monthOrder.map((m) => {
+                  const checked = !hiddenMonths.has(m.key);
+                  return (
+                    <label
+                      key={m.key}
+                      style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 4px", fontSize: 13, color: COLORS.ink, cursor: "pointer" }}
+                    >
+                      <input type="checkbox" checked={checked} onChange={() => toggleMonthVisible(m.key)} style={{ cursor: "pointer" }} />
+                      {m.label}
+                    </label>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
         <button
           onClick={() => setConfirmApplyTarget(true)}
-          style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, background: "none", border: `1px solid ${COLORS.border}`, color: COLORS.primaryDark, padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+          style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: `1px solid ${COLORS.border}`, color: COLORS.primaryDark, padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
         >
           <GaugeIcon size={13} /> Aplicar objetivo 45–60 a todos
         </button>
@@ -779,22 +845,26 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
       </div>
 
       <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, overflow: "auto", maxHeight: "72vh", position: "relative" }}>
-        <div style={{ minWidth: 560 + monthOrder.length * 120 }}>
+        <div style={{ minWidth: 560 + visibleMonthOrder.length * 120 }}>
           <div style={{
-            display: "grid", gridTemplateColumns: `1.6fr repeat(${monthOrder.length}, 120px) 150px 190px 130px`,
+            display: "grid", gridTemplateColumns: `1.6fr repeat(${visibleMonthOrder.length}, 120px) 150px 190px 130px`,
             padding: "10px 16px", background: COLORS.bg, borderBottom: `1px solid ${COLORS.border}`,
             fontSize: 11, fontWeight: 700, color: COLORS.inkMuted, textTransform: "uppercase", letterSpacing: 0.4,
             position: "sticky", top: 0, zIndex: 3,
           }}>
             <div>Proveedor / Rubro</div>
-            {monthOrder.map((m) => <div key={m.key} style={{ textAlign: "right" }}>{m.label}</div>)}
+            {monthOrder.map((m) => (
+              !hiddenMonths.has(m.key) && (
+                <div key={m.key} style={{ ...PERIOD_CELL_STYLE, textAlign: "right" }}>{m.label}</div>
+              )
+            ))}
             <div style={{ textAlign: "right", borderLeft: `1px solid ${COLORS.border}`, paddingLeft: 16, marginLeft: 4 }}>Venta promedio</div>
             <div style={{ paddingLeft: 20 }}>Días de stock</div>
             <div>Objetivo (días)</div>
           </div>
 
           <div style={{
-            display: "grid", gridTemplateColumns: `1.6fr repeat(${monthOrder.length}, 120px) 150px 190px 130px`,
+            display: "grid", gridTemplateColumns: `1.6fr repeat(${visibleMonthOrder.length}, 120px) 150px 190px 130px`,
             padding: "14px 16px", background: COLORS.primaryDark, color: "#fff",
             alignItems: "center", borderBottom: `2px solid ${COLORS.ink}`,
           }}>
@@ -802,7 +872,9 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
               {TOTAL_LABEL}
             </div>
             {globalPeriodTotals.map((val, i) => (
-              <TotalPeriodCell key={monthOrder[i].key} value={val} prevValue={i > 0 ? globalPeriodTotals[i - 1] : null} />
+              hiddenMonths.has(monthOrder[i].key) ? null : (
+                <TotalPeriodCell key={monthOrder[i].key} value={val} prevValue={i > 0 ? globalPeriodTotals[i - 1] : null} />
+              )
             ))}
             <div style={{ textAlign: "right", fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, fontWeight: 700, borderLeft: "1px solid rgba(255,255,255,0.25)", paddingLeft: 16, marginLeft: 4 }}>
               {globalTotals.ventaTotal ? fmtMoney(globalTotals.ventaTotal) : "—"}
@@ -821,7 +893,7 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
                 <div
                   onClick={() => toggleExpand(grupo)}
                   style={{
-                    display: "grid", gridTemplateColumns: `1.6fr repeat(${monthOrder.length}, 120px) 150px 190px 130px`,
+                    display: "grid", gridTemplateColumns: `1.6fr repeat(${visibleMonthOrder.length}, 120px) 150px 190px 130px`,
                     padding: "12px 16px", cursor: "pointer", background: COLORS.primarySoft,
                     borderBottom: `1px solid ${COLORS.border}`, alignItems: "center",
                   }}
@@ -833,6 +905,7 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
                   </div>
                   {periodTotals.map((val, i) => {
                     const periodKey = monthOrder[i].key;
+                    if (hiddenMonths.has(periodKey)) return null;
                     const totalForPeriod = globalTotals.stockByPeriod[periodKey];
                     const pct = val != null && totalForPeriod ? (val / totalForPeriod) * 100 : null;
                     return (
@@ -858,7 +931,7 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
                     <div
                       key={r.rkey}
                       style={{
-                        display: "grid", gridTemplateColumns: `1.6fr repeat(${monthOrder.length}, 120px) 150px 190px 130px`,
+                        display: "grid", gridTemplateColumns: `1.6fr repeat(${visibleMonthOrder.length}, 120px) 150px 190px 130px`,
                         padding: "10px 16px 10px 34px", borderBottom: `1px solid ${COLORS.border}`, alignItems: "center",
                       }}
                     >
@@ -867,6 +940,7 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
                         <StatusBadge dias={dias} min={t.min} max={t.max} />
                       </div>
                       {monthOrder.map((m, i) => {
+                        if (hiddenMonths.has(m.key)) return null;
                         const val = r.months[m.key] ?? null;
                         const totalForPeriod = globalTotals.stockByPeriod[m.key];
                         const pct = val != null && totalForPeriod ? (val / totalForPeriod) * 100 : null;
