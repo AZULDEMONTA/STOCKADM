@@ -901,7 +901,6 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
                   <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 700, color: COLORS.primaryDark, fontSize: 13.5 }}>
                     {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
                     {grupo}
-                    <StatusCountBadges counts={statusCounts} />
                   </div>
                   {periodTotals.map((val, i) => {
                     const periodKey = monthOrder[i].key;
