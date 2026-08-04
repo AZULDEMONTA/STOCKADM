@@ -657,20 +657,16 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
 
   const kpis = useMemo(() => {
     const allRubros = Object.entries(data.rows).map(([rkey, r]) => ({ rkey, ...r }));
-    let stockActual = 0, stockPrev = 0, weightedNum = 0, weightedDen = 0;
+    let stockActual = 0, stockPrev = 0;
     allRubros.forEach((r) => {
       const v = r.months[latest?.key] || 0;
       stockActual += v;
       if (prev) stockPrev += r.months[prev.key] || 0;
-      const venta = getVenta(r.rkey);
-      const dias = diasStockDe(v, venta);
-      if (dias != null) {
-        weightedNum += dias * v;
-        weightedDen += v;
-      }
     });
     const ventaTotal = Object.values(data.venta || {}).reduce((s, v) => s + (v || 0), 0);
-    const avgDias = weightedDen ? weightedNum / weightedDen : null;
+    // Días de stock: stock total actual ÷ venta total (mismo criterio que se usa por grupo/proveedor),
+    // en vez de un promedio ponderado por rubro, para que ambos números sean comparables.
+    const avgDias = diasStockDe(stockActual, ventaTotal);
     const variacion = stockPrev ? ((stockActual - stockPrev) / stockPrev) * 100 : null;
     return { stockActual, variacion, avgDias, ventaTotal, totalRubros: allRubros.length };
   }, [data.rows, data.venta, targets, latest, prev, getVenta]);
@@ -709,7 +705,7 @@ function DashboardView({ data, targets, setTargets, expanded, toggleExpand, setE
           icon={kpis.variacion >= 0 ? TrendingUp : TrendingDown}
           accent={kpis.variacion == null ? COLORS.ink : kpis.variacion >= 0 ? COLORS.warning : COLORS.success}
         />
-        <KpiCard label="Días de stock (prom. ponderado)" value={kpis.avgDias == null ? "—" : `${Math.round(kpis.avgDias)}d`} sub={`sobre ${kpis.totalRubros} rubros`} icon={GaugeIcon} />
+        <KpiCard label="Días de stock" value={kpis.avgDias == null ? "—" : `${Math.round(kpis.avgDias)}d`} sub={`stock ÷ venta total · ${kpis.totalRubros} rubros`} icon={GaugeIcon} />
         <KpiCard label="Venta promedio total" value={fmtMoneyShort(kpis.ventaTotal)} sub="suma del archivo de venta" icon={Receipt} />
       </div>
 
