@@ -4,6 +4,7 @@ import {
   Upload, FileSpreadsheet, ChevronDown, ChevronRight, AlertTriangle,
   TrendingUp, TrendingDown, Search, RotateCcw, Info, Layers,
   LineChart as LineChartIcon, Gauge as GaugeIcon, Zap, Receipt, Boxes,
+  ArrowLeftRight,
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import {
@@ -231,7 +232,10 @@ function parseVentaFile(arrayBuffer, fileName) {
 /* ---------------------------------- data merge ---------------------------------- */
 
 function emptyData() {
-  return { periodsMeta: {}, rows: {}, venta: {}, targets: {}, uploadLog: [], ventaMeta: null };
+  return {
+    periodsMeta: {}, rows: {}, venta: {}, targets: {}, uploadLog: [], ventaMeta: null,
+    stockActual: {}, stockActualMeta: null,
+  };
 }
 
 function mergeStockData(prevData, parseResult) {
@@ -260,6 +264,55 @@ function applyVentaData(prevData, parseResult) {
     uploadedAt: new Date().toISOString(), rowCount: parseResult.rowCount,
   });
   return data;
+}
+
+function applyStockActualData(prevData, parseResult) {
+  const data = prevData ? JSON.parse(JSON.stringify(prevData)) : emptyData();
+  data.stockActual = parseResult.stockActual;
+  data.stockActualMeta = { fileName: parseResult.fileName, uploadedAt: new Date().toISOString(), rowCount: parseResult.rowCount };
+  data.uploadLog.push({
+    id: `sa_${Date.now()}`, type: "stockActual", fileName: parseResult.fileName,
+    uploadedAt: new Date().toISOString(), rowCount: parseResult.rowCount,
+  });
+  return data;
+}
+
+function parseStockActualFile(arrayBuffer, fileName) {
+  const wb = XLSX.read(arrayBuffer, { type: "array" });
+  const found = findHeaderRow(wb, [["GRUPO"], ["RUB"], ["NETO"]]);
+  if (!found) {
+    throw new Error("No encontré una hoja con columnas de Grupo, Rubro y Neto. Revisá el archivo de stock actual.");
+  }
+  const { rows, headerRowIdx, header } = found;
+
+  let grupoCol = -1, rubroCol = -1, netoCol = -1;
+  header.forEach((cell, idx) => {
+    const n = normalize(cell);
+    if (!n) return;
+    if (n.includes("GRUPO")) grupoCol = idx;
+    else if (n.includes("RUB")) rubroCol = idx;
+    else if (n.includes("NETO")) netoCol = idx;
+  });
+
+  const agg = {};
+  for (let i = headerRowIdx + 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    const grupoRaw = row[grupoCol], rubroRaw = row[rubroCol], netoRaw = row[netoCol];
+    if (grupoRaw == null || rubroRaw == null) continue;
+    const grupo = String(grupoRaw).trim();
+    const rubro = String(rubroRaw).trim();
+    if (!grupo || !rubro) continue;
+    const neto = typeof netoRaw === "number" ? netoRaw : (parseFloat(netoRaw) || 0);
+    const rkey = `${grupo}||${rubro}`;
+    agg[rkey] = (agg[rkey] || 0) + neto;
+  }
+
+  if (Object.keys(agg).length === 0) {
+    throw new Error("No se encontraron filas válidas en el archivo de stock actual.");
+  }
+
+  return { stockActual: agg, fileName, rowCount: Object.keys(agg).length };
 }
 
 function withTimeout(promise, ms) {
@@ -334,12 +387,15 @@ function generateDemoData() {
       const targetDias = Math.round(15 + Math.random() * 130);
       const lastStock = months[DEMO_PERIODOS[DEMO_PERIODOS.length - 1].key];
       data.venta[rkey] = Math.round((lastStock / targetDias) * 30);
+      data.stockActual[rkey] = Math.round(lastStock * (0.7 + Math.random() * 0.6));
     });
   });
 
   data.ventaMeta = { fileName: "Datos de ejemplo (simulados)", uploadedAt: new Date().toISOString(), rowCount: Object.keys(data.venta).length, numMeses: 1, hasFecha: true };
+  data.stockActualMeta = { fileName: "Datos de ejemplo (simulados)", uploadedAt: new Date().toISOString(), rowCount: Object.keys(data.stockActual).length };
   data.uploadLog.push({ id: `demo_${Date.now()}`, type: "stock", fileName: "Datos de ejemplo (simulados)", uploadedAt: new Date().toISOString(), periods: DEMO_PERIODOS.map((p) => p.label), rowCount: Object.keys(data.rows).length });
   data.uploadLog.push({ id: `demo2_${Date.now()}`, type: "venta", fileName: "Datos de ejemplo (simulados)", uploadedAt: new Date().toISOString(), rowCount: Object.keys(data.venta).length });
+  data.uploadLog.push({ id: `demo3_${Date.now()}`, type: "stockActual", fileName: "Datos de ejemplo (simulados)", uploadedAt: new Date().toISOString(), rowCount: Object.keys(data.stockActual).length });
   return data;
 }
 
@@ -1299,6 +1355,286 @@ function EvolucionView({ data }) {
   );
 }
 
+function StockActualView({ data, targets, setTargets }) {
+  const [search, setSearch] = useState("");
+  const [grupoFilter, setGrupoFilter] = useState("TODOS");
+  const [statusFilter, setStatusFilter] = useState("TODOS");
+  const [sortBy, setSortBy] = useState("stock");
+  const [expanded, setExpanded] = useState(new Set());
+  const getVenta = useVentaLookup(data);
+
+  const hasStockActual = data.stockActual && Object.keys(data.stockActual).length > 0;
+
+  const items = useMemo(() => {
+    return Object.entries(data.stockActual || {}).map(([rkey, stock]) => {
+      const [grupo, rubro] = rkey.split("||");
+      const venta = getVenta(rkey);
+      const t = targets[rkey] || DEFAULT_TARGET;
+      const dias = diasStockDe(stock, venta);
+      return { rkey, grupo, rubro, stock, venta, dias, target: t, status: getStatus(dias, t.min, t.max) };
+    });
+  }, [data.stockActual, getVenta, targets]);
+
+  const grupos = useMemo(() => [...new Set(items.map((it) => it.grupo))].sort(), [items]);
+  const globalStockTotal = useMemo(() => items.reduce((s, it) => s + (it.stock || 0), 0), [items]);
+  const globalVentaTotal = useMemo(() => items.reduce((s, it) => s + (it.venta || 0), 0), [items]);
+  const globalDias = diasStockDe(globalStockTotal, globalVentaTotal);
+
+  const grouped = useMemo(() => {
+    const list = grupos
+      .filter((g) => grupoFilter === "TODOS" || g === grupoFilter)
+      .map((g) => {
+        let rubrosAll = items.filter((it) => it.grupo === g);
+        if (search.trim()) {
+          const q = normalize(search);
+          rubrosAll = rubrosAll.filter((it) => normalize(it.rubro).includes(q));
+        }
+        let rubrosFiltered = statusFilter === "TODOS" ? rubrosAll : rubrosAll.filter((it) => it.status === statusFilter);
+        rubrosFiltered = [...rubrosFiltered];
+        if (sortBy === "venta") rubrosFiltered.sort((a, b) => (b.venta || 0) - (a.venta || 0));
+        else if (sortBy === "nombre") rubrosFiltered.sort((a, b) => a.rubro.localeCompare(b.rubro));
+        else rubrosFiltered.sort((a, b) => (b.stock || 0) - (a.stock || 0));
+
+        const stockGrupo = rubrosAll.reduce((s, it) => s + (it.stock || 0), 0);
+        const ventaGrupo = rubrosAll.reduce((s, it) => s + (it.venta || 0), 0);
+        const diasGrupo = diasStockDe(stockGrupo, ventaGrupo);
+        let wMin = 0, wMax = 0, wDen = 0;
+        rubrosAll.forEach((it) => {
+          const w = it.stock || 0;
+          wMin += it.target.min * w;
+          wMax += it.target.max * w;
+          wDen += w;
+        });
+        const targetGrupo = wDen ? { min: Math.round(wMin / wDen), max: Math.round(wMax / wDen) } : DEFAULT_TARGET;
+        return { grupo: g, rubros: rubrosFiltered, stockGrupo, ventaGrupo, diasGrupo, targetGrupo };
+      })
+      .filter((g) => g.rubros.length > 0);
+
+    if (sortBy === "stock") list.sort((a, b) => b.stockGrupo - a.stockGrupo);
+    else if (sortBy === "venta") list.sort((a, b) => b.ventaGrupo - a.ventaGrupo);
+    else list.sort((a, b) => a.grupo.localeCompare(b.grupo));
+    return list;
+  }, [grupos, grupoFilter, search, statusFilter, sortBy, items]);
+
+  const updateTarget = (key, field, value) => {
+    const n = Math.max(0, Number(value) || 0);
+    setTargets((prevT) => ({ ...prevT, [key]: { ...(prevT[key] || DEFAULT_TARGET), [field]: n } }));
+  };
+
+  const toggleExpand = (grupo) => {
+    setExpanded((prevExp) => {
+      const next = new Set(prevExp);
+      next.has(grupo) ? next.delete(grupo) : next.add(grupo);
+      return next;
+    });
+  };
+
+  if (!hasStockActual) {
+    return (
+      <div style={{ background: COLORS.surface, border: `1px dashed ${COLORS.border}`, borderRadius: 12, padding: 50, textAlign: "center" }}>
+        <ArrowLeftRight size={28} color={COLORS.inkMuted} style={{ marginBottom: 10 }} />
+        <div style={{ fontWeight: 700, marginBottom: 4 }}>Todavía no cargaste el stock actual</div>
+        <div style={{ fontSize: 12.5, color: COLORS.inkMuted }}>
+          Subí un archivo de stock actual en "Cargar datos" para comparar contra la venta promedio.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        <KpiCard label="Stock actual" value={fmtMoneyShort(globalStockTotal)} sub={data.stockActualMeta?.fileName} icon={Boxes} />
+        <KpiCard label="Venta promedio total" value={fmtMoneyShort(globalVentaTotal)} sub="suma del archivo de venta" icon={Receipt} />
+        <KpiCard label="Días de stock" value={globalDias == null ? "—" : `${Math.round(globalDias)}d`} sub={`stock actual ÷ venta total · ${items.length} rubros`} icon={GaugeIcon} />
+      </div>
+
+      {!data.ventaMeta && (
+        <div style={{ display: "flex", gap: 6, alignItems: "flex-start", background: COLORS.warningSoft, color: "#8A5E1F", fontSize: 12.5, padding: "9px 12px", borderRadius: 8, marginBottom: 14 }}>
+          <Info size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+          Todavía no cargaste el archivo de venta promedio — los días de stock no se pueden calcular hasta que lo subas.
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap", alignItems: "center" }}>
+        <div style={{ position: "relative" }}>
+          <Search size={14} style={{ position: "absolute", left: 10, top: 9, color: COLORS.inkMuted }} />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar rubro..."
+            style={{ padding: "7px 10px 7px 30px", borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 13, width: 200, fontFamily: "Inter, sans-serif" }}
+          />
+        </div>
+        <select
+          value={grupoFilter}
+          onChange={(e) => setGrupoFilter(e.target.value)}
+          style={{ padding: "7px 10px", borderRadius: 8, border: `1px solid ${COLORS.border}`, fontSize: 13, fontFamily: "Inter, sans-serif", color: COLORS.ink, background: COLORS.surface }}
+        >
+          <option value="TODOS">Todos los proveedores</option>
+          {grupos.map((g) => <option key={g} value={g}>{g}</option>)}
+        </select>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto" }}>
+          <span style={{ fontSize: 12, color: COLORS.inkMuted }}>Ordenar por</span>
+          <div style={{ display: "flex", gap: 4, background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 3 }}>
+            {[{ id: "stock", label: "Stock" }, { id: "venta", label: "Venta" }, { id: "nombre", label: "Nombre" }].map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => setSortBy(opt.id)}
+                style={{
+                  border: "none", padding: "5px 11px", borderRadius: 6, fontSize: 12, cursor: "pointer",
+                  background: sortBy === opt.id ? COLORS.primary : "transparent",
+                  color: sortBy === opt.id ? "#fff" : COLORS.inkMuted,
+                  fontWeight: sortBy === opt.id ? 700 : 500,
+                }}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 12, color: COLORS.inkMuted }}>Filtrar rubros por etiqueta</span>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {["TODOS", "rango", "riesgo", "exceso"].map((key) => {
+            const active = statusFilter === key;
+            const meta = key === "TODOS" ? { label: "Todos", fg: COLORS.primaryDark, bg: COLORS.primarySoft } : STATUS_META[key];
+            return (
+              <button
+                key={key}
+                onClick={() => setStatusFilter(key)}
+                style={{
+                  border: `1px solid ${active ? meta.fg : COLORS.border}`,
+                  background: active ? meta.bg : COLORS.surface,
+                  color: meta.fg,
+                  padding: "5px 12px", borderRadius: 20, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}
+              >
+                {meta.label}
+              </button>
+            );
+          })}
+        </div>
+        <button
+          onClick={() => setExpanded(new Set())}
+          style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: `1px solid ${COLORS.border}`, color: COLORS.primaryDark, padding: "5px 12px", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer" }}
+        >
+          <ChevronRight size={13} /> Colapsar todos
+        </button>
+      </div>
+
+      <div style={{ display: "flex", gap: 6, alignItems: "flex-start", background: COLORS.primarySoft, color: COLORS.primaryDark, fontSize: 12, padding: "8px 10px", borderRadius: 8, marginBottom: 14 }}>
+        <Info size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+        Esta comparativa usa el stock actual importado de forma independiente (no los archivos de stock por período) contra la venta promedio ya cargada.
+      </div>
+
+      <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, overflow: "auto", maxHeight: "72vh", position: "relative" }}>
+        <div style={{ minWidth: 720 }}>
+          <div style={{
+            display: "grid", gridTemplateColumns: `1.6fr 160px 160px 190px 130px`,
+            padding: "10px 16px", background: COLORS.bg, borderBottom: `1px solid ${COLORS.border}`,
+            fontSize: 11, fontWeight: 700, color: COLORS.inkMuted, textTransform: "uppercase", letterSpacing: 0.4,
+            position: "sticky", top: 0, zIndex: 3,
+          }}>
+            <div>Proveedor / Rubro</div>
+            <div style={{ textAlign: "right" }}>Stock actual</div>
+            <div style={{ textAlign: "right" }}>Venta promedio</div>
+            <div style={{ paddingLeft: 20 }}>Días de stock</div>
+            <div>Objetivo (días)</div>
+          </div>
+
+          <div style={{
+            display: "grid", gridTemplateColumns: `1.6fr 160px 160px 190px 130px`,
+            padding: "14px 16px", background: COLORS.primaryDark, color: "#fff",
+            alignItems: "center", borderBottom: `2px solid ${COLORS.ink}`,
+          }}>
+            <div style={{ fontWeight: 700, fontSize: 13.5, letterSpacing: 0.3, textTransform: "uppercase" }}>
+              {TOTAL_LABEL}
+            </div>
+            <div style={{ textAlign: "right", fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, fontWeight: 700 }}>
+              {fmtMoney(globalStockTotal)}
+            </div>
+            <div style={{ textAlign: "right", fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, fontWeight: 700 }}>
+              {globalVentaTotal ? fmtMoney(globalVentaTotal) : "—"}
+            </div>
+            <div style={{ paddingLeft: 20, fontFamily: "IBM Plex Mono, monospace", fontSize: 13, fontWeight: 700 }}>
+              {globalDias == null ? "—" : `${Math.round(globalDias)}d prom.`}
+            </div>
+            <div />
+          </div>
+
+          {grouped.map(({ grupo, rubros, stockGrupo, ventaGrupo, diasGrupo, targetGrupo }) => {
+            const isOpen = statusFilter !== "TODOS" ? true : expanded.has(grupo);
+            return (
+              <div key={grupo}>
+                <div
+                  onClick={() => toggleExpand(grupo)}
+                  style={{
+                    display: "grid", gridTemplateColumns: `1.6fr 160px 160px 190px 130px`,
+                    padding: "12px 16px", cursor: "pointer", background: COLORS.primarySoft,
+                    borderBottom: `1px solid ${COLORS.border}`, alignItems: "center",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 700, color: COLORS.primaryDark, fontSize: 13.5 }}>
+                    {isOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
+                    {grupo}
+                  </div>
+                  <div style={{ textAlign: "right", fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5 }}>{fmtMoney(stockGrupo)}</div>
+                  <div style={{ textAlign: "right", fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, color: COLORS.inkMuted }}>{ventaGrupo ? fmtMoney(ventaGrupo) : "—"}</div>
+                  <div style={{ paddingLeft: 20 }}>
+                    <Gauge dias={diasGrupo} min={targetGrupo.min} max={targetGrupo.max} />
+                  </div>
+                  <div />
+                </div>
+
+                {isOpen && rubros.map((it) => (
+                  <div
+                    key={it.rkey}
+                    style={{
+                      display: "grid", gridTemplateColumns: `1.6fr 160px 160px 190px 130px`,
+                      padding: "10px 16px 10px 34px", borderBottom: `1px solid ${COLORS.border}`, alignItems: "center",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: COLORS.ink }}>
+                      {titleCase(it.rubro)}
+                      <StatusBadge dias={it.dias} min={it.target.min} max={it.target.max} />
+                    </div>
+                    <div style={{ textAlign: "right", fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5 }}>{fmtMoney(it.stock)}</div>
+                    <div style={{ textAlign: "right", fontFamily: "IBM Plex Mono, monospace", fontSize: 12.5, color: COLORS.inkMuted }}>{it.venta != null ? fmtMoney(it.venta) : "—"}</div>
+                    <div style={{ paddingLeft: 20 }}>
+                      <Gauge dias={it.dias} min={it.target.min} max={it.target.max} />
+                    </div>
+                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                      <input
+                        type="number" value={it.target.min}
+                        onChange={(e) => updateTarget(it.rkey, "min", e.target.value)}
+                        style={{ width: 42, padding: "3px 4px", fontSize: 11.5, borderRadius: 5, border: `1px solid ${COLORS.border}`, fontFamily: "IBM Plex Mono, monospace" }}
+                      />
+                      <span style={{ color: COLORS.inkMuted, fontSize: 11 }}>–</span>
+                      <input
+                        type="number" value={it.target.max}
+                        onChange={(e) => updateTarget(it.rkey, "max", e.target.value)}
+                        style={{ width: 42, padding: "3px 4px", fontSize: 11.5, borderRadius: 5, border: `1px solid ${COLORS.border}`, fontFamily: "IBM Plex Mono, monospace" }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+          {grouped.length === 0 && (
+            <div style={{ padding: 40, textAlign: "center", color: COLORS.inkMuted, fontSize: 13 }}>
+              No hay rubros que coincidan con el filtro.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UploadBox({ title, description, icon: Icon, onFile, busy, status, accentColor }) {
   return (
     <div
@@ -1337,11 +1673,13 @@ function UploadBox({ title, description, icon: Icon, onFile, busy, status, accen
   );
 }
 
-function CargarView({ data, onMergeStock, onApplyVenta, onResetAll, onLoadDemo }) {
+function CargarView({ data, onMergeStock, onApplyVenta, onApplyStockActual, onResetAll, onLoadDemo }) {
   const [stockStatus, setStockStatus] = useState(null);
   const [stockBusy, setStockBusy] = useState(false);
   const [ventaStatus, setVentaStatus] = useState(null);
   const [ventaBusy, setVentaBusy] = useState(false);
+  const [stockActualStatus, setStockActualStatus] = useState(null);
+  const [stockActualBusy, setStockActualBusy] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
 
   const handleStockFile = useCallback(async (file) => {
@@ -1374,9 +1712,22 @@ function CargarView({ data, onMergeStock, onApplyVenta, onResetAll, onLoadDemo }
     } finally { setVentaBusy(false); }
   }, [onApplyVenta]);
 
+  const handleStockActualFile = useCallback(async (file) => {
+    if (!file) return;
+    setStockActualBusy(true); setStockActualStatus(null);
+    try {
+      const buf = await file.arrayBuffer();
+      const result = parseStockActualFile(buf, file.name);
+      onApplyStockActual(result);
+      setStockActualStatus({ ok: true, msg: `${result.rowCount} combinaciones de grupo/rubro. Reemplazó el stock actual anterior.` });
+    } catch (e) {
+      setStockActualStatus({ ok: false, msg: e.message || "No se pudo procesar el archivo." });
+    } finally { setStockActualBusy(false); }
+  }, [onApplyStockActual]);
+
   return (
     <div style={{ maxWidth: 900 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
         <UploadBox
           title="Stock por período"
           description="Detalle de artículos con columnas Grupo, Rubro, Período y Neto ($). Cada período que traiga el archivo se suma al histórico."
@@ -1398,6 +1749,18 @@ function CargarView({ data, onMergeStock, onApplyVenta, onResetAll, onLoadDemo }
       </div>
 
       <div style={{ marginBottom: 20 }}>
+        <UploadBox
+          title="Stock actual (independiente)"
+          description="Foto de stock actual, sin relación con el histórico por período. Columnas Grupo, Rubro y Neto ($). Se usa en la solapa 'Stock Actual' para comparar contra la venta promedio, y reemplaza por completo el stock actual anterior."
+          icon={ArrowLeftRight}
+          accentColor={COLORS.success}
+          onFile={handleStockActualFile}
+          busy={stockActualBusy}
+          status={stockActualStatus}
+        />
+      </div>
+
+      <div style={{ marginBottom: 20 }}>
         <button
           onClick={onLoadDemo}
           style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "none", border: `1px solid ${COLORS.border}`, color: COLORS.primaryDark, padding: "7px 14px", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}
@@ -1411,6 +1774,15 @@ function CargarView({ data, onMergeStock, onApplyVenta, onResetAll, onLoadDemo }
           <div><strong>Venta promedio activa:</strong> {data.ventaMeta.fileName}</div>
           <div style={{ color: COLORS.inkMuted }}>
             {data.ventaMeta.rowCount} filas · {data.ventaMeta.hasFecha ? `promedio sobre ${data.ventaMeta.numMeses} mes(es)` : "sin promediar (no había fecha)"} · cargado el {new Date(data.ventaMeta.uploadedAt).toLocaleDateString("es-AR")}
+          </div>
+        </div>
+      )}
+
+      {data.stockActualMeta && (
+        <div style={{ background: COLORS.surface, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 14, marginBottom: 16, display: "flex", justifyContent: "space-between", fontSize: 12.5 }}>
+          <div><strong>Stock actual activo:</strong> {data.stockActualMeta.fileName}</div>
+          <div style={{ color: COLORS.inkMuted }}>
+            {data.stockActualMeta.rowCount} filas · cargado el {new Date(data.stockActualMeta.uploadedAt).toLocaleDateString("es-AR")}
           </div>
         </div>
       )}
@@ -1442,11 +1814,11 @@ function CargarView({ data, onMergeStock, onApplyVenta, onResetAll, onLoadDemo }
             {[...data.uploadLog].reverse().map((p) => (
               <div key={p.id} style={{ display: "flex", justifyContent: "space-between", padding: "8px 0", borderBottom: `1px solid ${COLORS.border}`, fontSize: 12.5, gap: 10 }}>
                 <span style={{
-                  background: p.type === "stock" ? COLORS.primarySoft : "#EFE9F5",
-                  color: p.type === "stock" ? COLORS.primaryDark : COLORS.violet,
+                  background: p.type === "stock" ? COLORS.primarySoft : p.type === "stockActual" ? COLORS.successSoft : "#EFE9F5",
+                  color: p.type === "stock" ? COLORS.primaryDark : p.type === "stockActual" ? COLORS.success : COLORS.violet,
                   fontWeight: 700, fontSize: 10.5, padding: "2px 8px", borderRadius: 20, textTransform: "uppercase", flexShrink: 0,
                 }}>
-                  {p.type === "stock" ? "Stock" : "Venta"}
+                  {p.type === "stock" ? "Stock" : p.type === "stockActual" ? "Stock actual" : "Venta"}
                 </span>
                 <div style={{ color: COLORS.ink, fontWeight: 500, flex: 1 }}>{p.fileName}</div>
                 <div style={{ color: COLORS.inkMuted }}>{p.rowCount} filas{p.periods ? ` · ${p.periods.join(", ")}` : ""}</div>
@@ -1558,6 +1930,15 @@ function AppInner() {
     });
   }, []);
 
+  const handleApplyStockActual = useCallback((parseResult) => {
+    setData((prevData) => {
+      const next = applyStockActualData(prevData, parseResult);
+      setSaving(true);
+      saveData(next).finally(() => setSaving(false));
+      return next;
+    });
+  }, []);
+
   const setTargets = useCallback((updater) => {
     setData((prevData) => {
       const nextTargets = typeof updater === "function" ? updater(prevData.targets) : updater;
@@ -1594,6 +1975,7 @@ function AppInner() {
   const TABS = [
     { id: "dashboard", label: "Dashboard", icon: Layers },
     { id: "evolucion", label: "Evolución", icon: LineChartIcon },
+    { id: "comparativa", label: "Stock Actual", icon: ArrowLeftRight },
     { id: "cargar", label: "Cargar datos", icon: Upload },
   ];
 
@@ -1648,7 +2030,7 @@ function AppInner() {
             <RotateCcw size={14} /> Reintentar
           </button>
         </div>
-      ) : !hasData && view !== "cargar" ? (
+      ) : !hasData && view !== "cargar" && view !== "comparativa" ? (
         <div style={{ background: COLORS.surface, border: `1px dashed ${COLORS.border}`, borderRadius: 12, padding: 50, textAlign: "center" }}>
           <FileSpreadsheet size={28} color={COLORS.inkMuted} style={{ marginBottom: 10 }} />
           <div style={{ fontWeight: 700, marginBottom: 4 }}>Todavía no hay datos cargados</div>
@@ -1666,7 +2048,8 @@ function AppInner() {
         <>
           {view === "dashboard" && <DashboardView data={data} targets={data.targets} setTargets={setTargets} expanded={expanded} toggleExpand={toggleExpand} setExpanded={setExpanded} />}
           {view === "evolucion" && <EvolucionView data={data} />}
-          {view === "cargar" && <CargarView data={data} onMergeStock={handleMergeStock} onApplyVenta={handleApplyVenta} onResetAll={handleResetAll} onLoadDemo={handleLoadDemo} />}
+          {view === "comparativa" && <StockActualView data={data} targets={data.targets} setTargets={setTargets} />}
+          {view === "cargar" && <CargarView data={data} onMergeStock={handleMergeStock} onApplyVenta={handleApplyVenta} onApplyStockActual={handleApplyStockActual} onResetAll={handleResetAll} onLoadDemo={handleLoadDemo} />}
         </>
       )}
     </div>
