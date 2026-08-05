@@ -1380,6 +1380,15 @@ function StockActualView({ data, targets, setTargets }) {
   const globalVentaTotal = useMemo(() => items.reduce((s, it) => s + (it.venta || 0), 0), [items]);
   const globalDias = diasStockDe(globalStockTotal, globalVentaTotal);
 
+  const unmatchedVenta = useMemo(() => {
+    const matchedKeys = new Set(items.map((it) => normKey(it.rkey)));
+    let count = 0, total = 0;
+    Object.entries(data.venta || {}).forEach(([rkey, v]) => {
+      if (!matchedKeys.has(normKey(rkey))) { count++; total += v || 0; }
+    });
+    return { count, total };
+  }, [data.venta, items]);
+
   const grouped = useMemo(() => {
     const list = grupos
       .filter((g) => grupoFilter === "TODOS" || g === grupoFilter)
@@ -1453,6 +1462,13 @@ function StockActualView({ data, targets, setTargets }) {
         <div style={{ display: "flex", gap: 6, alignItems: "flex-start", background: COLORS.warningSoft, color: "#8A5E1F", fontSize: 12.5, padding: "9px 12px", borderRadius: 8, marginBottom: 14 }}>
           <Info size={14} style={{ marginTop: 1, flexShrink: 0 }} />
           Todavía no cargaste el archivo de venta promedio — los días de stock no se pueden calcular hasta que lo subas.
+        </div>
+      )}
+
+      {unmatchedVenta.count > 0 && (
+        <div style={{ display: "flex", gap: 6, alignItems: "flex-start", background: COLORS.warningSoft, color: "#8A5E1F", fontSize: 12.5, padding: "9px 12px", borderRadius: 8, marginBottom: 14 }}>
+          <Info size={14} style={{ marginTop: 1, flexShrink: 0 }} />
+          Por eso el total de venta acá difiere del de Dashboard: {unmatchedVenta.count} rubro(s) de venta promedio ({fmtMoney(unmatchedVenta.total)}) no tienen un grupo/rubro equivalente en el archivo de stock actual, así que no entran en esta comparativa.
         </div>
       )}
 
